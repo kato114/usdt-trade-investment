@@ -1,0 +1,97 @@
+.twitter-typeahead {
+    width: 100%;
+}
+
+.file-box {
+    float: left;
+    width: 220px;
+}
+
+.corner {
+    position: absolute;
+    display: inline-block;
+    width: 0;
+    height: 0;
+    line-height: 0;
+    border: 0.6em solid transparent;
+    border-right: 0.6em solid $primary;
+    border-bottom: 0.6em solid $primary;
+    right: 0em;
+    bottom: 0em;
+}
+
+.file .attachment-delete {
+    color: $primary;
+    position: absolute;
+    right: 4px;
+    margin-top: 4px;
+}
+
+.file .attachment-delete:hover, .file .attachment-delete :active {
+    color: darken($primary, 20);
+    cursor: grabbing;
+}
+
+.file {
+    border: 1px solid #e7eaec;
+    padding: 0;
+    background-color: #ffffff;
+    position: relative;
+    margin-bottom: 20px;
+    margin-right: 20px;
+    border-radius: $border-radius;
+}
+
+.file .file-name {
+    padding: 10px;
+    background-color: #f8f8f8;
+    border-top: 1px solid #e7eaec;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.file .icon {
+    padding: 15px 10px;
+    text-align: center;
+    font-size: 50px;
+}
+
+.file .icon, .file .image {
+    height: 100px;
+    overflow: hidden;
+}
+
+.dropdown-menu {
+    z-index: 2000;
+}
+
+td, th {
+    max-width: 10vw;
+}
+
+.wrap {
+    text-overflow: ellipsis;
+    overflow: hidden;
+    white-space: nowrap;
+}
+
+#goToTop {
+    display: none; /* Hidden by default */
+    position: fixed; /* Fixed/sticky position */
+    bottom: 20px; /* Place the button at the bottom of the page */
+    right: 30px; /* Place the button 30px from the right */
+    z-index: 99; /* Make sure it does not overlap */
+    border: none; /* Remove borders */
+    outline: none; /* Remove outline */
+    background-color: $primary; /* Set a background color */
+    color: white; /* Text color */
+    cursor: pointer; /* Add a mouse pointer on hover */
+    padding: 15px; /* Some padding */
+    border-radius: 5px; /* Rounded corners */
+    font-size: 18px; /* Increase font size */
+}
+
+#goToTop:hover {
+    background-color: #555; /* Add a dark-grey background on hover */
+}

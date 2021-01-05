@@ -1,0 +1,227 @@
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Account;
+use App\Client;
+use App\ClientReferral;
+use App\DepositRequest;
+use App\Foundation\Statement\DomExtract;
+use App\Foundation\Statement\TransactionExtract;
+use App\InvestorTransaction;
+use App\Jobs\InvestorComputation;
+use App\Notifications\RegistrationRequest;
+use App\Notifications\TransactionRequest;
+use App\SupportTicket;
+use App\Transaction;
+use App\User;
+use App\WithdrawRequests;
+use Carbon\Carbon;
+use GuzzleHttp\Cookie\CookieJar;
+use GuzzleHttp\Cookie\SetCookie;
+use GuzzleHttp\RequestOptions;
+use http\Client\Request;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
+use function request;
+
+class ClientController extends Controller
+{
+    /**
+     * HomeController constructor.
+     */
+    public function __construct()
+    {
+        $this->middleware('auth:admin,client');
+    }
+
+    public function index(Client $client)
+    {
+        if (request()->action == null) {
+            return redirect(route('client', ['client' => $client, 'action' => 'dashboard']));
+        } else {
+            $types = ['General', 'Dispute', 'Financial'];
+            $periods = (object)[
+                /**(object)[
+                 * 'name' => 'Today',
+                 * 'start' => now()->startOfDay(),
+                 * 'end' => now()->endOfDay()],*/
+                (object)[
+                    'name' => ''/**'Total Profits' **/,
+                    'start' => Carbon::parse('first day of jan 2019'),
+                    'end' => now()->endOfDay()],
+            ];
+            if (request('action') == 'operations') {
+                if (request()->has('w')) {
+                    switch (request('role')) {
+                        case 'approval':
+                            $withdraw = WithdrawRequests::query()->findOrFail(request('operation'));
+                            $withdraw->apply();
+                            break;
+                        case 'rejection':
+                            $withdraw = WithdrawRequests::query()->findOrFail(request('operation'));
+                            $withdraw->reject();
+                            break;
+                        default:
+                            break;
+                    }
+                } else {
+                    switch (request('role')) {
+                        case 'approval':
+                            $deposit = DepositRequest::query()->findOrFail(request('operation'));
+                            $deposit->apply();
+                            break;
+                        case 'rejection':
+                            $deposit = DepositRequest::query()->findOrFail(request('operation'));
+                            $deposit->reject();
+                            break;
+                        default:
+                            break;
+                    }
+                }
+            } else if (request('action') == 'beneficiary') {
+                if (request()->isMethod('post')) {
+                    $client->payload = request()->only('name', 'phone', 'email', 'relationship');
+                    $client->save();
+                    return back()->withSuccess('Updated');
+                }
+            }
+            return view('client.profile', compact('client', 'periods', 'types'));
+        }
+    }
+
+    public function profit()
+    {
+        $extract = new DomExtract();
+        $extract->account = request('account_id');
+        $transaction = new TransactionExtract();
+        $transaction->dom = $extract;
+        $transaction->ticket = request('ticket');
+        $transaction->type = 'profit';
+        $transaction->date = request('date');
+        $transaction->amount = request('amount');
+        $extract->transactions[] = $transaction;
+        Account::importFromExtract($extract);
+        return back()->withSuccess('Successful');
+    }
+
+    public function deposit(Client $client)
+    {
+        $guzzleclient = new \GuzzleHttp\Client(['debug' => false]);
+        $cookies = new CookieJar();
+        $account = Account::query()->findOrFail(cache('default_wallet'));
+        $cookies->setCookie(new SetCookie(['Name' => 'PHPSESSID',
+            'Value' => $account->cookie,
+            'Domain' => 'mind.capital',
+            'Expires' => Carbon::now()->addDay(1)->toCookieString()]));
+
+        $options = [
+            RequestOptions::COOKIES => $cookies,
+            RequestOptions::FORM_PARAMS => ['action' => 'create-deposit', 'data' => ['USD_deposit' => request('amount'), 'tipo' => 1]]
+        ];
+        $res = $guzzleclient->post('https://mind.capital/admin/_action.depositos.php', $options);
+        if ($res->getStatusCode() == 200) {
+            $result = json_decode($res->getBody()->getContents());
+            if ($result->result != true) {
+                return response()->json(['message' => 'Something wrong happened. ' . Str::title($result->error)])->setStatusCode(500);
+            } else {
+                DB::beginTransaction();
+                $deposit = DepositRequest::query()->firstOrNew([
+                    'address' => $result->data->pay_address,
+                    'qrcode' => $result->data->qrcode,
+                    'btc' => $result->data->BTC_asked,
+                    'usd' => $result->data->USD_deposit,
+                    'status' => 'pending',
+                    'client_id' => $client->id,
+                    'account_id' => $account->id,
+                    'deposit_id' => $result->data->id_deposito
+                ]);
+                $deposit->save();
+                foreach (User::query()->get() as $user) {
+                    $user->notify(new TransactionRequest($deposit));
+                }
+                DB::commit();
+                return $deposit;
+            }
+        } else {
+            return response()->json(['message' => 'Something wrong happened. Noted.'])->setStatusCode(500);
+        }
+    }
+
+    public function withdraw(Client $client)
+    {
+        DB::beginTransaction();
+        $withdraw = $client->withdrawalRequests()->save(new WithdrawRequests(request()->all()));
+        $withdraw->client_id = $client->id;
+        $withdraw->save();
+        foreach (User::query()->get() as $user) {
+            $user->notify(new TransactionRequest($withdraw));
+        }
+        DB::commit();
+        return ['message' => 'Request has been received'];
+    }
+
+    public function openTicket(Client $client)
+    {
+        $types = ['General', 'Dispute', 'Financial'];
+
+        request()->validate([
+            'type' => 'required|in:' . implode(',', $types),
+            'subject' => 'required',
+            'narration' => 'required',
+        ]);
+
+        $ticket = new SupportTicket(request()->only('type', 'subject', 'narration'));
+        $client->tickets()->save($ticket);
+        session()->put("message", "Ticket Opened");
+        return redirect(route('client', compact('client')));
+    }
+
+    public function transaction(Client $client)
+    {
+        if (user()->role == 'admin') {
+            $time = request('date');
+            $client->investorTransactions()->save(new InvestorTransaction(['type' => request('operation'), 'amount' => request('amount'), 'account_id' => request('account_id'), 'narration' => 'Client ' . request('operation'), 'date' => $time]));
+        }
+        return redirect(route('client', compact('client')));
+    }
+
+    public function referral(Client $client)
+    {
+        if (request()->isMethod('post')) {
+            $rules = ["account_id" => "required|exists:clients,id|unique:referrals,client_id"];
+            request()->validate($rules, ['client_id.unique' => 'The client selected has already been configured']);
+            \DB::table('referrals')->insert(['client_id' => $client->id, 'referral_id' => request('account_id')]);
+            return redirect(route('client', compact('client')));
+        } else {
+            if (request()->has('query')) {
+                if (request('query') != "") {
+                    $query = Client::query()->where('name', 'like', '%' . request('query') . '%');
+                    return $query->firstOrFail();
+                } else {
+                    abort(404);
+                }
+            } else if (request('action') == 'delete') {
+                ClientReferral::destroy(request('referral'));
+                return redirect(route('client', compact('client')));
+            }
+            return view('client.accounts.referral', compact('client'));
+        }
+    }
+    	public static function rname($id)
+	{
+		$refferedby =  DB::select('SELECT * FROM `referrals` where referral_id= '.$id.' limit 1');
+		if(!empty($refferedby[0]->client_id))
+		{
+		 $rid = $refferedby[0]->client_id;
+	$refferedbyname =  DB::select('SELECT * FROM `clients` where id= '.$rid.' limit 1');
+	$sname = $refferedbyname[0]->name;
+		}
+		else
+		{
+			$sname="No referal";
+		}
+		  return $sname;
+	}
+}
+
